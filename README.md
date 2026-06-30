@@ -4,6 +4,10 @@
 
 > 重要声明：本项目仅用于研究、复盘和流程自动化，不构成投资建议，不提供自动交易能力。
 
+## 架构图
+
+![A股短线信号系统 3.0 架构图](docs/architecture.png)
+
 ## 功能
 
 - A股行情抓取：优先尝试涨停池，失败或为空时回退到全市场实时行情。
@@ -14,7 +18,8 @@
 - 回测验证：对已保存的历史信号文件做 1/3/5 个交易日收益验证。
 - 风控过滤：识别 ST/退市、北交所、流动性不足、过热涨幅、过高换手、龙虎榜分歧、单一题材集中。
 - 题材强度：按题材股票数、平均涨幅、接近涨停数、成交额生成强度分。
-- AI Berkshire 交接：导出 Top 20 候选文件，供 Codex/AI Berkshire 做二次 PASS/WATCH/VETO 风控。
+- AI Berkshire 复核：用短线、财务、生意、风险四角色复核，输出 `AI_PASS / AI_WATCH / AI_VETO`。
+- 投资建议层：生成 `A / B / C / D` 建议等级、触发条件、止损价、目标价和仓位风险预算。
 - Codex Cron：支持 09:00、11:30、15:00 三段自动运行。
 
 ## 快速开始
@@ -44,6 +49,8 @@ logs/YYYY-MM-DD.md          # 中文报告
 logs/YYYY-MM-DD.log         # JSON 摘要日志
 logs/cron.log               # 运行日志
 data/signals_YYYY-MM-DD.csv # 信号明细
+data/advice_YYYY-MM-DD.csv  # 建议层明细
+data/ai_berkshire_review_YYYY-MM-DD.csv # AI Berkshire 复核明细
 data/backtest_YYYY-MM-DD.csv# 回测明细
 data/backtest_groups_YYYY-MM-DD.csv # 分组回测
 data/ai_berkshire_candidates_YYYY-MM-DD.csv # AI Berkshire 二次风控候选
@@ -59,6 +66,8 @@ data/ai_berkshire_candidates_YYYY-MM-DD.csv # AI Berkshire 二次风控候选
 ├── risk_control.py          # 风控过滤与降级
 ├── theme_strength.py        # 题材强度评分
 ├── ai_berkshire_gate.py     # AI Berkshire 候选导出
+├── ai_berkshire_review.py   # AI Berkshire 多角色复核
+├── advice_engine.py         # A/B/C/D 建议层与价格计划
 ├── scripts/run.sh           # 标准运行入口
 ├── tests/                   # 基础逻辑测试
 ├── docs/                    # 发布文档
@@ -85,11 +94,12 @@ data/ai_berkshire_candidates_YYYY-MM-DD.csv # AI Berkshire 二次风控候选
 - 券商下单
 - 自动交易
 - 游资席位标签识别
-- 真正调用 AI Berkshire skill
+- 远端真实多 Agent 调度
+- 财务数据双源自动校验
 - 对当天信号声称未来收益胜率
 
-当前已经导出 AI Berkshire 二次风控候选文件，但状态是 `pending_manual_or_codex_skill_review`。只有 Codex/AI Berkshire 实际读候选并写回 `PASS / WATCH / VETO` 后，才能说 AI Berkshire 参与风控。
+当前 AI Berkshire 复核是本地规则化多角色复核，不等同于完整深度投研。`AI_PASS` 也不是买入建议，只表示复核层未发现否决性问题；最终仍需人工判断。
 
 ## 免责声明
 
-本项目输出的 `BUY / HOLD / AVOID` 是规则信号，不是买卖建议。任何投资决策应由使用者独立判断并自行承担风险。详见 [DISCLAIMER.md](DISCLAIMER.md)。
+本项目输出的 `BUY / HOLD / AVOID` 和 `A / B / C / D` 是研究与复盘标签，不是买卖建议。任何投资决策应由使用者独立判断并自行承担风险。详见 [DISCLAIMER.md](DISCLAIMER.md)。
