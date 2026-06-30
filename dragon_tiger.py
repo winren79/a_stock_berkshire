@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import akshare as ak
@@ -21,10 +21,28 @@ def today_yyyymmdd() -> str:
     return datetime.now().strftime("%Y%m%d")
 
 
-def fetch_dragon_tiger(date: str | None = None) -> tuple[pd.DataFrame, str]:
-    trade_date = date or today_yyyymmdd()
-    df = ak.stock_lhb_detail_em(start_date=trade_date, end_date=trade_date)
-    return df, f"akshare.stock_lhb_detail_em(start_date={trade_date}, end_date={trade_date})"
+def fetch_dragon_tiger(date: str | None = None, fallback_days: int = 7) -> tuple[pd.DataFrame, str]:
+    requested_date = date or today_yyyymmdd()
+    errors: list[str] = []
+    start = datetime.strptime(requested_date, "%Y%m%d")
+
+    for offset in range(fallback_days + 1):
+        trade_date = (start - timedelta(days=offset)).strftime("%Y%m%d")
+        source = f"akshare.stock_lhb_detail_em(start_date={trade_date}, end_date={trade_date})"
+        try:
+            df = ak.stock_lhb_detail_em(start_date=trade_date, end_date=trade_date)
+        except Exception as exc:
+            errors.append(f"{trade_date}: {type(exc).__name__}: {exc}")
+            continue
+
+        if df is not None and not df.empty and "代码" in df.columns:
+            if trade_date == requested_date:
+                return df, source
+            return df, f"{source} (fallback from requested_date={requested_date})"
+        errors.append(f"{trade_date}: empty or invalid dataframe")
+
+    detail = "; ".join(errors)
+    raise RuntimeError(f"dragon tiger fetch failed: {detail}")
 
 
 def _num(value: Any) -> float:

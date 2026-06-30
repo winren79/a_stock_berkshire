@@ -89,7 +89,11 @@ def backtest_signal_file(
     skipped = 0
     for _, row in candidates.iterrows():
         code = normalize_code(row.get("代码", ""))
-        returns = returns_for_symbol(code, signal_date, horizons)
+        try:
+            returns = returns_for_symbol(code, signal_date, horizons)
+        except Exception:
+            skipped += 1
+            continue
         if all(value is None for value in returns.values()):
             skipped += 1
             continue

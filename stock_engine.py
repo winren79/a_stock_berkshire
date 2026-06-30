@@ -14,7 +14,9 @@ from typing import Any
 import akshare as ak
 import pandas as pd
 
+from advice_engine import export_advice
 from ai_berkshire_gate import export_ai_berkshire_candidates
+from ai_berkshire_review import export_ai_berkshire_review, review_candidates
 from backtest import backtest_signal_file
 from dragon_tiger import enrich_with_dragon_tiger, fetch_dragon_tiger, summarize_dragon_tiger
 from risk_control import apply_risk_controls
@@ -64,6 +66,17 @@ class RunSummary:
     ai_candidates_count: int
     ai_candidates_path: str
     ai_berkshire_status: str
+    advice_count: int
+    advice_a_count: int
+    advice_b_count: int
+    advice_c_count: int
+    advice_d_count: int
+    advice_path: str
+    ai_review_count: int
+    ai_pass_count: int
+    ai_watch_count: int
+    ai_veto_count: int
+    ai_review_path: str
     csv_path: str
     markdown_path: str
     log_path: str
@@ -105,18 +118,50 @@ def _pick_columns(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(picked)
 
 
+def _has_usable_market_values(df: pd.DataFrame) -> bool:
+    if df.empty:
+        return False
+    picked = _pick_columns(df)
+    amount_count = int((picked["成交额"].apply(_num) > 0).sum())
+    pct_count = int((picked["涨跌幅"].apply(_num) != 0).sum())
+    return amount_count >= 50 or pct_count >= 50
+
+
 def fetch_market_data(date: str | None = None) -> tuple[pd.DataFrame, str]:
+    errors: list[str] = []
+    used_date = date or datetime.now().strftime("%Y%m%d")
+
     try:
-        zt = ak.stock_zt_pool_em(date=date) if date else ak.stock_zt_pool_em()
-    except Exception:
+        zt = ak.stock_zt_pool_em(date=used_date)
+    except Exception as exc:
+        errors.append(f"stock_zt_pool_em: {type(exc).__name__}: {exc}")
         zt = pd.DataFrame()
 
     if not zt.empty:
-        used_date = date or datetime.now().strftime("%Y%m%d")
-        return zt, f"akshare.stock_zt_pool_em(date={used_date})"
+        if _has_usable_market_values(zt):
+            return zt, f"akshare.stock_zt_pool_em(date={used_date})"
+        errors.append("stock_zt_pool_em: unusable zero market values")
 
-    spot = ak.stock_zh_a_spot_em()
-    return spot, "akshare.stock_zh_a_spot_em(fallback: stock_zt_pool_em empty/unavailable)"
+    try:
+        spot = ak.stock_zh_a_spot_em()
+    except Exception as exc:
+        errors.append(f"stock_zh_a_spot_em: {type(exc).__name__}: {exc}")
+    else:
+        if _has_usable_market_values(spot):
+            return spot, "akshare.stock_zh_a_spot_em(fallback: stock_zt_pool_em empty/unavailable)"
+        errors.append("stock_zh_a_spot_em: empty dataframe" if spot.empty else "stock_zh_a_spot_em: unusable zero market values")
+
+    try:
+        sina_spot = ak.stock_zh_a_spot()
+    except Exception as exc:
+        errors.append(f"stock_zh_a_spot: {type(exc).__name__}: {exc}")
+    else:
+        if _has_usable_market_values(sina_spot):
+            return sina_spot, "akshare.stock_zh_a_spot(fallback: eastmoney spot unavailable)"
+        errors.append("stock_zh_a_spot: empty dataframe" if sina_spot.empty else "stock_zh_a_spot: unusable zero market values")
+
+    detail = "; ".join(errors) if errors else "all market data sources returned empty"
+    raise RuntimeError(f"market data fetch failed: {detail}")
 
 
 def market_emotion(limit_up_like_count: int) -> str:
@@ -245,6 +290,7 @@ def build_signals(raw: pd.DataFrame, min_score: int) -> tuple[pd.DataFrame, str,
     selected = df[df["分数"] >= min_score].copy()
     selected = apply_theme_strength(selected, theme_stats)
     if not selected.empty:
+        selected["情绪周期"] = emotion
         selected["分数"] = selected["分数"] + selected["题材强度"].apply(lambda value: 1 if int(value) >= 5 else 0)
         selected["理由"] = selected.apply(
             lambda row: f"{row['理由']}；题材强度:{int(row['题材强度'])}" if int(row["题材强度"]) > 0 else row["理由"],
@@ -322,8 +368,11 @@ def write_markdown(signals: pd.DataFrame, summary: RunSummary) -> None:
         f"- 风控分布：PASS {summary.risk_pass_count} / WATCH {summary.risk_watch_count} / VETO {summary.risk_veto_count}",
         f"- 最强题材：{summary.top_theme or '无'} / 强度 {summary.top_theme_strength}",
         f"- AI Berkshire 候选：{summary.ai_candidates_count} / 状态 {summary.ai_berkshire_status} / 文件 {summary.ai_candidates_path}",
+        f"- AI Berkshire 复核：PASS {summary.ai_pass_count} / WATCH {summary.ai_watch_count} / VETO {summary.ai_veto_count} / 文件 {summary.ai_review_path}",
+        f"- 投资建议层：A {summary.advice_a_count} / B {summary.advice_b_count} / C {summary.advice_c_count} / D {summary.advice_d_count} / 文件 {summary.advice_path}",
         "",
-        "> 仅用于研究和复盘，不构成投资建议。BUY/HOLD/AVOID 是规则信号，不是交易指令；龙虎榜和回测只作为验证层。",
+        "> 仅用于研究和复盘，不构成个性化投资建议。BUY/HOLD/AVOID 是规则信号；A/B/C/D 是基于固定规则的研究建议层，必须结合账户风险和人工复核。",
+        "> AI_PASS 不是买入建议，仅表示多角色复核未发现否决性问题；AI_WATCH/AI_VETO 会限制或否决建议层。",
         "",
     ]
 
@@ -346,6 +395,10 @@ def write_markdown(signals: pd.DataFrame, summary: RunSummary) -> None:
                 "龙虎榜净买额",
                 "风控结论",
                 "风控标签",
+                "AI_Berkshire_复核",
+                "AI_Berkshire_短线",
+                "AI_Berkshire_财务",
+                "AI_Berkshire_风险",
                 "理由",
             ]
         ].head(80)
@@ -373,10 +426,21 @@ def run(date: str | None, min_score: int) -> RunSummary:
     signals = apply_risk_controls(signals)
     if not signals.empty:
         signals = sort_signals(signals)
-    signals.to_csv(csv_path, index=False, encoding="utf-8-sig")
     backtest_summary = maybe_backtest_previous_signal(file_day)
+    advice_context = {
+        "market_emotion": emotion,
+        "backtest_tested_rows": int(backtest_summary["tested_rows"]),
+        "backtest_win_rate_1d": backtest_summary["win_rate_1d"],
+        "finance_data_available": False,
+    }
     ai_output_path = DATA_DIR / f"ai_berkshire_candidates_{file_day}.csv"
     ai_summary = export_ai_berkshire_candidates(signals, ai_output_path)
+    reviewed_signals = review_candidates(signals, advice_context)
+    reviewed_signals.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    ai_review_output_path = DATA_DIR / f"ai_berkshire_review_{file_day}.csv"
+    ai_review_summary = export_ai_berkshire_review(reviewed_signals, ai_review_output_path, advice_context)
+    advice_output_path = DATA_DIR / f"advice_{file_day}.csv"
+    advice_summary = export_advice(reviewed_signals, advice_output_path, advice_context)
     top_theme = ""
     top_theme_strength = 0
     if not theme_stats.empty:
@@ -389,10 +453,10 @@ def run(date: str | None, min_score: int) -> RunSummary:
         market_emotion=emotion,
         limit_up_like_count=limit_up_like_count,
         rows_fetched=len(raw),
-        rows_selected=len(signals),
-        buy_count=int((signals["信号"] == "BUY").sum()) if not signals.empty else 0,
-        hold_count=int((signals["信号"] == "HOLD").sum()) if not signals.empty else 0,
-        avoid_count=int((signals["信号"] == "AVOID").sum()) if not signals.empty else 0,
+        rows_selected=len(reviewed_signals),
+        buy_count=int((reviewed_signals["信号"] == "BUY").sum()) if not reviewed_signals.empty else 0,
+        hold_count=int((reviewed_signals["信号"] == "HOLD").sum()) if not reviewed_signals.empty else 0,
+        avoid_count=int((reviewed_signals["信号"] == "AVOID").sum()) if not reviewed_signals.empty else 0,
         lhb_source=lhb_source,
         lhb_listed_count=int(lhb_summary["lhb_listed_count"]),
         lhb_positive_count=int(lhb_summary["lhb_positive_count"]),
@@ -404,20 +468,31 @@ def run(date: str | None, min_score: int) -> RunSummary:
         backtest_avg_return_1d=backtest_summary["avg_return_1d"],
         backtest_max_loss_1d=backtest_summary["max_loss_1d"],
         backtest_grouped_path=str(backtest_summary["grouped_path"]),
-        risk_pass_count=int((signals["风控结论"] == "PASS").sum()) if not signals.empty else 0,
-        risk_watch_count=int((signals["风控结论"] == "WATCH").sum()) if not signals.empty else 0,
-        risk_veto_count=int((signals["风控结论"] == "VETO").sum()) if not signals.empty else 0,
+        risk_pass_count=int((reviewed_signals["风控结论"] == "PASS").sum()) if not reviewed_signals.empty else 0,
+        risk_watch_count=int((reviewed_signals["风控结论"] == "WATCH").sum()) if not reviewed_signals.empty else 0,
+        risk_veto_count=int((reviewed_signals["风控结论"] == "VETO").sum()) if not reviewed_signals.empty else 0,
         top_theme=top_theme,
         top_theme_strength=top_theme_strength,
         ai_candidates_count=int(ai_summary["ai_candidates_count"]),
         ai_candidates_path=str(ai_summary["ai_candidates_path"]),
         ai_berkshire_status=str(ai_summary["ai_berkshire_status"]),
+        advice_count=int(advice_summary["advice_count"]),
+        advice_a_count=int(advice_summary["advice_a_count"]),
+        advice_b_count=int(advice_summary["advice_b_count"]),
+        advice_c_count=int(advice_summary["advice_c_count"]),
+        advice_d_count=int(advice_summary["advice_d_count"]),
+        advice_path=str(advice_summary["advice_path"]),
+        ai_review_count=int(ai_review_summary["ai_review_count"]),
+        ai_pass_count=int(ai_review_summary["ai_pass_count"]),
+        ai_watch_count=int(ai_review_summary["ai_watch_count"]),
+        ai_veto_count=int(ai_review_summary["ai_veto_count"]),
+        ai_review_path=str(ai_review_summary["ai_review_path"]),
         csv_path=str(csv_path),
         markdown_path=str(markdown_path),
         log_path=str(log_path),
     )
 
-    write_markdown(signals, summary)
+    write_markdown(reviewed_signals, summary)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(asdict(summary), ensure_ascii=False) + "\n")
     return summary

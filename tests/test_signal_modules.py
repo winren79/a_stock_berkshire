@@ -1,8 +1,12 @@
 import pandas as pd
 
+from advice_engine import build_advice
 from ai_berkshire_gate import export_ai_berkshire_candidates
-from dragon_tiger import enrich_with_dragon_tiger, normalize_code, summarize_dragon_tiger
+from ai_berkshire_review import review_candidates
+from backtest import backtest_signal_file
+from dragon_tiger import enrich_with_dragon_tiger, fetch_dragon_tiger, normalize_code, summarize_dragon_tiger
 from risk_control import apply_risk_controls
+from stock_engine import build_signals, fetch_market_data
 from theme_strength import compute_theme_strength
 
 
@@ -51,6 +55,49 @@ def test_enrich_with_dragon_tiger_marks_positive_and_negative_matches():
     assert summary["lhb_listed_count"] == 2
     assert summary["lhb_positive_count"] == 1
     assert summary["lhb_negative_count"] == 1
+
+
+def test_fetch_dragon_tiger_falls_back_to_previous_available_date(monkeypatch):
+    import dragon_tiger
+
+    def fake_lhb(start_date, end_date):
+        if start_date == "20260630":
+            raise TypeError("'NoneType' object is not subscriptable")
+        if start_date == "20260629":
+            return pd.DataFrame(
+                [
+                    {
+                        "代码": "000021",
+                        "龙虎榜净买额": 80_000_000,
+                    }
+                ]
+            )
+        return pd.DataFrame()
+
+    monkeypatch.setattr(dragon_tiger.ak, "stock_lhb_detail_em", fake_lhb)
+
+    df, source = fetch_dragon_tiger("20260630", fallback_days=2)
+
+    assert len(df) == 1
+    assert df["代码"].iloc[0] == "000021"
+    assert "start_date=20260629" in source
+    assert "fallback from requested_date=20260630" in source
+
+
+def test_fetch_dragon_tiger_reports_all_failed_dates(monkeypatch):
+    import dragon_tiger
+
+    monkeypatch.setattr(dragon_tiger.ak, "stock_lhb_detail_em", lambda *args, **kwargs: pd.DataFrame())
+
+    try:
+        fetch_dragon_tiger("20260630", fallback_days=1)
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("fetch_dragon_tiger should fail when all fallback dates are empty")
+
+    assert "20260630: empty or invalid dataframe" in message
+    assert "20260629: empty or invalid dataframe" in message
 
 
 def test_risk_controls_veto_st_and_retired_names():
@@ -116,3 +163,230 @@ def test_ai_berkshire_candidate_export(tmp_path):
     assert summary["ai_candidates_count"] == 1
     exported = pd.read_csv(output)
     assert exported["AI_Berkshire_状态"].iloc[0] == "待评估"
+
+
+def test_fetch_market_data_falls_back_to_sina_when_eastmoney_fails(monkeypatch):
+    import stock_engine
+
+    seen_dates = []
+
+    def fail_zt(*args, **kwargs):
+        seen_dates.append(kwargs.get("date"))
+        raise ConnectionError("eastmoney zt unavailable")
+
+    def fail(*args, **kwargs):
+        raise ConnectionError("eastmoney unavailable")
+
+    fallback = pd.DataFrame(
+        [
+            {
+                "代码": f"000{i:03d}",
+                "名称": f"测试{i}",
+                "最新价": 10.0,
+                "涨跌幅": 1.2,
+                "成交额": 1_000_000_000,
+            }
+            for i in range(100)
+        ]
+    )
+
+    monkeypatch.setattr(stock_engine.ak, "stock_zt_pool_em", fail_zt)
+    monkeypatch.setattr(stock_engine.ak, "stock_zh_a_spot_em", fail)
+    monkeypatch.setattr(stock_engine.ak, "stock_zh_a_spot", lambda: fallback)
+
+    df, source = fetch_market_data(date="20260630")
+
+    assert source == "akshare.stock_zh_a_spot(fallback: eastmoney spot unavailable)"
+    assert df["代码"].iloc[0] == "000000"
+    assert seen_dates == ["20260630"]
+
+
+def test_backtest_skips_symbols_when_history_fetch_fails(monkeypatch, tmp_path):
+    import backtest
+
+    signal_file = tmp_path / "signals_2026-06-29.csv"
+    pd.DataFrame(
+        [
+            {
+                "代码": "000001",
+                "名称": "平安银行",
+                "信号": "HOLD",
+                "分数": 5,
+            }
+        ]
+    ).to_csv(signal_file, index=False)
+
+    monkeypatch.setattr(backtest, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        backtest,
+        "returns_for_symbol",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("history unavailable")),
+    )
+
+    result_df, summary = backtest_signal_file(signal_file, max_symbols=1)
+
+    assert result_df.empty
+    assert summary.tested_rows == 0
+    assert summary.skipped_rows == 1
+
+
+def test_fetch_market_data_fails_when_live_values_are_unusable(monkeypatch, tmp_path):
+    import stock_engine
+
+    zero_live = pd.DataFrame(
+        [
+            {
+                "代码": f"000{i:03d}",
+                "名称": f"测试{i}",
+                "最新价": 0,
+                "涨跌幅": 0,
+                "成交额": 0,
+            }
+            for i in range(100)
+        ]
+    )
+
+    monkeypatch.setattr(stock_engine, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(stock_engine.ak, "stock_zt_pool_em", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(stock_engine.ak, "stock_zh_a_spot_em", lambda: zero_live)
+    monkeypatch.setattr(stock_engine.ak, "stock_zh_a_spot", lambda: zero_live)
+
+    try:
+        fetch_market_data(date="20260630")
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("fetch_market_data should fail rather than reuse stale snapshots")
+
+    assert "market data fetch failed" in message
+    assert "unusable zero market values" in message
+
+
+def test_build_signals_preserves_market_emotion_on_selected_rows():
+    raw = pd.DataFrame(
+        [
+            {
+                "代码": f"000{i:03d}",
+                "名称": f"半导体测试{i}",
+                "最新价": 10,
+                "涨跌幅": 10,
+                "成交额": 2_000_000_000,
+                "换手率": 10,
+                "封板资金": 100_000_000,
+                "连板数": 1,
+            }
+            for i in range(65)
+        ]
+    )
+
+    signals, emotion, _, _ = build_signals(raw, min_score=4)
+
+    assert emotion == "主升"
+    assert "情绪周期" in signals.columns
+    assert set(signals["情绪周期"]) == {"主升"}
+
+
+def test_advice_engine_allows_a_only_with_actionable_evidence():
+    signals = pd.DataFrame(
+        [
+            {
+                "代码": "600363",
+                "名称": "联创光电",
+                "信号": "BUY",
+                "分数": 8,
+                "题材": "半导体",
+                "题材强度": 7,
+                "情绪周期": "主升",
+                "最新价": 35.78,
+                "涨跌幅": 9.9,
+                "成交额": 1_300_000_000,
+                "龙虎榜确认": "未上榜",
+                "风控结论": "PASS",
+                "风控标签": "",
+                "AI_Berkshire_复核": "AI_PASS",
+                "理由": "测试",
+            }
+        ]
+    )
+
+    advice = build_advice(signals, {"market_emotion": "主升", "backtest_tested_rows": 20})
+
+    assert advice["建议等级"].iloc[0] == "A"
+    assert advice["建议动作"].iloc[0] == "可执行计划"
+    assert advice["建议仓位上限_pct"].iloc[0] == 1.0
+
+
+def test_advice_engine_downgrades_overheated_or_disputed_rows():
+    signals = pd.DataFrame(
+        [
+            {
+                "代码": "603078",
+                "名称": "江化微",
+                "信号": "HOLD",
+                "分数": 4,
+                "题材": "半导体",
+                "题材强度": 7,
+                "情绪周期": "高潮",
+                "最新价": 49.42,
+                "涨跌幅": 9.99,
+                "成交额": 2_100_000_000,
+                "龙虎榜确认": "强分歧",
+                "风控结论": "WATCH",
+                "风控标签": "龙虎榜强分歧",
+                "理由": "测试",
+            }
+        ]
+    )
+
+    advice = build_advice(signals, {"market_emotion": "高潮", "backtest_tested_rows": 20})
+
+    assert advice["建议等级"].iloc[0] == "D"
+    assert advice["建议动作"].iloc[0] == "回避"
+    assert advice["建议仓位上限_pct"].iloc[0] == 0.0
+
+
+def test_ai_berkshire_review_constrains_advice_layer():
+    signals = pd.DataFrame(
+        [
+            {
+                "代码": "600363",
+                "名称": "联创光电",
+                "信号": "HOLD",
+                "分数": 8,
+                "题材": "半导体",
+                "题材强度": 7,
+                "情绪周期": "高潮",
+                "最新价": 35.78,
+                "涨跌幅": 9.99,
+                "成交额": 1_370_000_000,
+                "龙虎榜确认": "未上榜",
+                "风控结论": "PASS",
+                "风控标签": "",
+                "理由": "测试",
+            },
+            {
+                "代码": "603078",
+                "名称": "江化微",
+                "信号": "HOLD",
+                "分数": 4,
+                "题材": "半导体",
+                "题材强度": 7,
+                "情绪周期": "高潮",
+                "最新价": 49.42,
+                "涨跌幅": 9.99,
+                "成交额": 2_100_000_000,
+                "龙虎榜确认": "强分歧",
+                "风控结论": "WATCH",
+                "风控标签": "龙虎榜强分歧",
+                "理由": "测试",
+            },
+        ]
+    )
+
+    reviewed = review_candidates(signals, {"market_emotion": "高潮", "backtest_tested_rows": 20})
+    advice = build_advice(reviewed, {"market_emotion": "高潮", "backtest_tested_rows": 20})
+
+    assert reviewed.loc[reviewed["代码"] == "600363", "AI_Berkshire_复核"].iloc[0] == "AI_WATCH"
+    assert reviewed.loc[reviewed["代码"] == "603078", "AI_Berkshire_复核"].iloc[0] == "AI_VETO"
+    assert advice.loc[advice["代码"] == "600363", "建议等级"].iloc[0] == "B"
+    assert advice.loc[advice["代码"] == "603078", "建议等级"].iloc[0] == "D"
