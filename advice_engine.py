@@ -132,6 +132,8 @@ def build_advice(signals: pd.DataFrame, context: dict[str, Any]) -> pd.DataFrame
         "涨跌幅",
         "成交额",
         "龙虎榜确认",
+        "资金流确认",
+        "主力净流入",
         "风控结论",
         "风控标签",
         "AI_Berkshire_复核",

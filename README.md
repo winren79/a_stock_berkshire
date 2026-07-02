@@ -21,6 +21,7 @@
 - 统计验证：样本足够时输出 bootstrap 均值置信区间；样本不足时明确标记。
 - Run Card：每次运行生成可审计运行卡，记录参数、warning、artifact hash。
 - 假设注册表：将每日运行挂到固定研究假设，保留策略版本和 run card 链接。
+- 收盘推荐复盘：收盘推荐 3-5 支候选必须落盘，次日自动复盘 1 日表现和推荐证据。
 - 风控过滤：识别 ST/退市、北交所、流动性不足、过热涨幅、过高换手、龙虎榜分歧、单一题材集中。
 - 题材强度：按题材股票数、平均涨幅、接近涨停数、成交额生成强度分。
 - AI Berkshire 复核：用短线、财务、生意、风险四角色复核，输出 `AI_PASS / AI_WATCH / AI_VETO`。
@@ -62,6 +63,8 @@ data/backtest_validation_YYYY-MM-DD.json # 统计验证
 data/runs/YYYY-MM-DD/run_card.json # 可审计运行卡
 data/runs/YYYY-MM-DD/run_card.md   # 可读运行卡
 data/hypotheses.json       # 研究假设注册表
+data/recommendations_YYYY-MM-DD.csv # 收盘候选推荐
+data/recommendation_review_YYYY-MM-DD.csv # 次日推荐复盘
 data/ai_berkshire_candidates_YYYY-MM-DD.csv # AI Berkshire 二次风控候选
 ```
 
@@ -77,6 +80,7 @@ data/ai_berkshire_candidates_YYYY-MM-DD.csv # AI Berkshire 二次风控候选
 ├── validation.py            # 回测样本统计验证
 ├── run_card.py              # 运行卡与 artifact hash
 ├── hypothesis_registry.py   # 假设注册表与策略版本追踪
+├── recommendations.py       # 收盘推荐落盘与次日复盘
 ├── risk_control.py          # 风控过滤与降级
 ├── theme_strength.py        # 题材强度评分
 ├── ai_berkshire_gate.py     # AI Berkshire 候选导出

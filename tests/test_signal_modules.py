@@ -485,6 +485,37 @@ def test_advice_engine_allows_a_only_with_actionable_evidence():
     assert advice["建议仓位上限_pct"].iloc[0] == 1.0
 
 
+def test_advice_engine_preserves_fund_flow_fields_for_recommendation_review():
+    signals = pd.DataFrame(
+        [
+            {
+                "代码": "600641",
+                "名称": "先导基电",
+                "信号": "HOLD",
+                "分数": 7,
+                "题材": "",
+                "题材强度": 0,
+                "情绪周期": "启动",
+                "最新价": 48.24,
+                "涨跌幅": 10,
+                "成交额": 1_300_000_000,
+                "龙虎榜确认": "强确认",
+                "资金流确认": "强确认",
+                "主力净流入": 80_000_000,
+                "风控结论": "PASS",
+                "风控标签": "",
+                "AI_Berkshire_复核": "AI_WATCH",
+                "理由": "测试",
+            }
+        ]
+    )
+
+    advice = build_advice(signals, {"market_emotion": "启动", "backtest_tested_rows": 20})
+
+    assert advice["资金流确认"].iloc[0] == "强确认"
+    assert advice["主力净流入"].iloc[0] == 80_000_000
+
+
 def test_advice_engine_downgrades_overheated_or_disputed_rows():
     signals = pd.DataFrame(
         [

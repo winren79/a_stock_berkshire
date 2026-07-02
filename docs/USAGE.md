@@ -81,6 +81,36 @@ data/hypotheses.json
 
 Run Card 用于审计本次运行，包含数据源 warning、输出文件路径和 sha256。`hypotheses.json` 用于追踪固定研究假设和策略版本，避免每天只看孤立结果。
 
+## 收盘推荐与次日复盘
+
+收盘后若输出 3-5 支候选，必须先生成推荐文件：
+
+```bash
+venv/bin/python recommendations.py export --limit 5
+```
+
+输出：
+
+```bash
+data/recommendations_YYYY-MM-DD.csv
+logs/recommendations_YYYY-MM-DD.md
+```
+
+第二天收盘后复盘上一份推荐：
+
+```bash
+venv/bin/python recommendations.py review
+```
+
+输出：
+
+```bash
+data/recommendation_review_YYYY-MM-DD.csv
+logs/recommendation_review_YYYY-MM-DD.md
+```
+
+复盘只验证“这批推荐是否具备次日研究价值”，不能把单日胜率当成长期有效证明。若没有推荐文件，第二天不能凭记忆补复盘。
+
 ## AI Berkshire 二次风控
 
 每次运行会生成：
@@ -180,3 +210,5 @@ AI_VETO
 - “未上榜就是资金不认可”
 - “样本不足但 bootstrap 已经证明策略有效”
 - “使用 stale fallback 时不需要披露数据源 warning”
+- “昨天推荐过但没有保存推荐文件，今天照样能严谨复盘”
+- “只看一日上涨就证明推荐体系长期有效”

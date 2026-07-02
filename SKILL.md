@@ -48,6 +48,8 @@ test -f data/hypotheses.json
 - ai_candidates_path / ai_berkshire_status
 - ai_review_path / ai_pass_count / ai_watch_count / ai_veto_count
 - advice_path / advice_a_count / advice_b_count / advice_c_count / advice_d_count
+- 收盘推荐文件 recommendations_YYYY-MM-DD.csv/md，若执行了收盘候选推荐
+- 次日复盘文件 recommendation_review_YYYY-MM-DD.csv/md，若执行了推荐复盘
 - data_warnings，尤其是否使用 stale fallback
 - run_card_json_path / hypothesis_registry_path / strategy_version
 - 是否运行成功
@@ -61,6 +63,18 @@ test -f data/hypotheses.json
 ```bash
 cd /Users/hechen/Documents/Codex/a_stock_berkshire
 venv/bin/python backtest.py --max-symbols 30
+```
+
+收盘候选推荐必须落盘，便于次日复盘：
+
+```bash
+venv/bin/python recommendations.py export --limit 5
+```
+
+次日复盘上一份收盘推荐：
+
+```bash
+venv/bin/python recommendations.py review
 ```
 
 回测后同时检查：
@@ -82,7 +96,10 @@ ls -lh data/backtest_validation_*.json
 - `BUY` 是买入建议。
 - 使用 stale fallback 时隐瞒数据源 warning。
 - 样本不足时声称 bootstrap 或回测已经证明策略有效。
+- 收盘后只口头推荐 3-5 支股票但不保存推荐文件。
+- 第二天不复盘推荐表现，却继续声称推荐有价值。
 
 `BUY / HOLD / AVOID` 是规则标签，不构成投资建议。
 `AI_PASS / AI_WATCH / AI_VETO` 是规则化二次复核标签，不构成投资建议。
 Run Card 和 Hypothesis Registry 是审计与复盘工具，不是收益保证。
+收盘推荐必须接受次日复盘验证，否则不能声称推荐体系有价值。
