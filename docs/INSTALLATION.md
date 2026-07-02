@@ -58,6 +58,8 @@ ls -lh data/
 - `logs/YYYY-MM-DD.log`
 - `logs/cron.log`
 - `data/signals_YYYY-MM-DD.csv`
+- `data/advice_YYYY-MM-DD.csv`
+- `data/ai_berkshire_review_YYYY-MM-DD.csv`
 - `data/backtest_YYYY-MM-DD.csv`，有历史可测信号时生成
 - `data/backtest_groups_YYYY-MM-DD.csv`，有历史可测信号时生成
 - `data/ai_berkshire_candidates_YYYY-MM-DD.csv`

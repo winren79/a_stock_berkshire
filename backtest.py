@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,6 +15,7 @@ import akshare as ak
 import pandas as pd
 
 from dragon_tiger import normalize_code
+from validation import validate_backtest_frame
 
 
 ROOT = Path(__file__).resolve().parent
@@ -33,6 +35,7 @@ class BacktestSummary:
     median_return_by_horizon: dict[str, float | None]
     max_loss_by_horizon: dict[str, float | None]
     grouped_output_path: str
+    validation_output_path: str
     output_path: str
 
 
@@ -43,11 +46,37 @@ def parse_signal_date(path: Path) -> str:
     return date_text
 
 
-def fetch_history(symbol: str, signal_date: str, max_horizon: int) -> pd.DataFrame:
+def fetch_history(symbol: str, signal_date: str, max_horizon: int, retries: int = 2) -> pd.DataFrame:
     start = signal_date.replace("-", "")
     end_date = datetime.strptime(signal_date, "%Y-%m-%d") + timedelta(days=max_horizon * 3 + 10)
     end = end_date.strftime("%Y%m%d")
-    return ak.stock_zh_a_hist(symbol=normalize_code(symbol), period="daily", start_date=start, end_date=end, adjust="")
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return ak.stock_zh_a_hist(symbol=normalize_code(symbol), period="daily", start_date=start, end_date=end, adjust="")
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(0.5 * (attempt + 1))
+    try:
+        return fetch_history_tx(symbol, start, end)
+    except Exception as exc:
+        if last_exc is not None:
+            raise RuntimeError(f"history fetch failed: em={last_exc}; tx={exc}") from exc
+        raise
+
+
+def tx_symbol(symbol: str) -> str:
+    code = normalize_code(symbol)
+    prefix = "sh" if code.startswith(("5", "6", "9")) else "sz"
+    return f"{prefix}{code}"
+
+
+def fetch_history_tx(symbol: str, start: str, end: str) -> pd.DataFrame:
+    hist = ak.stock_zh_a_hist_tx(symbol=tx_symbol(symbol), start_date=start, end_date=end, adjust="")
+    if hist.empty:
+        return hist
+    return hist.rename(columns={"date": "日期", "close": "收盘"})
 
 
 def returns_for_symbol(symbol: str, signal_date: str, horizons: Iterable[int]) -> dict[str, float | None]:
@@ -107,14 +136,42 @@ def backtest_signal_file(
             "龙虎榜确认": row.get("龙虎榜确认", ""),
             "题材": row.get("题材", ""),
             "风控结论": row.get("风控结论", ""),
+            "AI_Berkshire_复核": row.get("AI_Berkshire_复核", ""),
+            "建议等级": row.get("建议等级", ""),
         }
         result.update(returns)
         rows.append(result)
 
-    result_df = pd.DataFrame(rows)
     output_path = DATA_DIR / f"backtest_{signal_date}.csv"
-    result_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    result_df = pd.DataFrame(rows)
+    if result_df.empty and output_path.exists() and output_path.stat().st_size > 4:
+        existing_df = pd.read_csv(output_path, dtype={"代码": str})
+        if not existing_df.empty:
+            result_df = existing_df
+    else:
+        result_df.to_csv(output_path, index=False, encoding="utf-8-sig")
 
+    summary = summarize_backtest_result(
+        result_df=result_df,
+        signal_date=signal_date,
+        horizons=horizons,
+        input_rows=len(signals),
+        candidate_rows=len(candidates),
+        skipped_rows=skipped,
+        output_path=output_path,
+    )
+    return result_df, summary
+
+
+def summarize_backtest_result(
+    result_df: pd.DataFrame,
+    signal_date: str,
+    horizons: list[int],
+    input_rows: int,
+    candidate_rows: int,
+    skipped_rows: int,
+    output_path: Path,
+) -> BacktestSummary:
     win_rate: dict[str, float | None] = {}
     avg_return: dict[str, float | None] = {}
     median_return: dict[str, float | None] = {}
@@ -136,21 +193,25 @@ def backtest_signal_file(
     grouped_output_path = DATA_DIR / f"backtest_groups_{signal_date}.csv"
     group_df = grouped_backtest_stats(result_df, horizons)
     group_df.to_csv(grouped_output_path, index=False, encoding="utf-8-sig")
+    validation_output_path = DATA_DIR / f"backtest_validation_{signal_date}.json"
+    validation = validate_backtest_frame(result_df, horizons)
+    validation_output_path.write_text(json.dumps(validation, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
     summary = BacktestSummary(
         signal_date=signal_date,
         horizons=horizons,
-        input_rows=int(len(signals)),
+        input_rows=int(input_rows),
         tested_rows=int(len(result_df)),
-        skipped_rows=int(skipped + max(0, len(candidates) - len(result_df) - skipped)),
+        skipped_rows=int(skipped_rows + max(0, candidate_rows - len(result_df) - skipped_rows)),
         win_rate_by_horizon=win_rate,
         avg_return_by_horizon=avg_return,
         median_return_by_horizon=median_return,
         max_loss_by_horizon=max_loss,
         grouped_output_path=str(grouped_output_path),
+        validation_output_path=str(validation_output_path),
         output_path=str(output_path),
     )
-    return result_df, summary
+    return summary
 
 
 def grouped_backtest_stats(result_df: pd.DataFrame, horizons: list[int]) -> pd.DataFrame:
@@ -160,7 +221,7 @@ def grouped_backtest_stats(result_df: pd.DataFrame, horizons: list[int]) -> pd.D
         )
 
     rows = []
-    group_fields = ["原信号", "情绪周期", "龙虎榜确认", "题材", "风控结论"]
+    group_fields = ["原信号", "情绪周期", "龙虎榜确认", "题材", "风控结论", "AI_Berkshire_复核", "建议等级"]
     for field in group_fields:
         if field not in result_df.columns:
             continue

@@ -10,12 +10,17 @@
 
 ## 功能
 
-- A股行情抓取：优先尝试涨停池，失败或为空时回退到全市场实时行情。
+- A股行情抓取：通过数据源注册表依次尝试涨停池、全市场实时行情、Sina 行情和本地快照。
+- 数据质量校验：记录空数据、零价格、缺失代码、成交额/涨跌幅不可用等 warning。
 - 情绪周期：按接近涨停数量划分 `冰点 / 启动 / 主升 / 高潮`。
 - 题材过滤：基于关键词识别 AI、半导体、机器人、华为链、低空经济等题材。
 - 资金强度：成交额、涨跌幅、换手率、量比、封板资金、连板等规则评分。
 - 龙虎榜验证：匹配东方财富龙虎榜，识别净买额、净卖额、上榜原因和确认强度。
+- 资金流验证：匹配个股主力净流入，生成 `强确认 / 弱确认 / 未匹配 / 强分歧`。
 - 回测验证：对已保存的历史信号文件做 1/3/5 个交易日收益验证。
+- 统计验证：样本足够时输出 bootstrap 均值置信区间；样本不足时明确标记。
+- Run Card：每次运行生成可审计运行卡，记录参数、warning、artifact hash。
+- 假设注册表：将每日运行挂到固定研究假设，保留策略版本和 run card 链接。
 - 风控过滤：识别 ST/退市、北交所、流动性不足、过热涨幅、过高换手、龙虎榜分歧、单一题材集中。
 - 题材强度：按题材股票数、平均涨幅、接近涨停数、成交额生成强度分。
 - AI Berkshire 复核：用短线、财务、生意、风险四角色复核，输出 `AI_PASS / AI_WATCH / AI_VETO`。
@@ -53,6 +58,10 @@ data/advice_YYYY-MM-DD.csv  # 建议层明细
 data/ai_berkshire_review_YYYY-MM-DD.csv # AI Berkshire 复核明细
 data/backtest_YYYY-MM-DD.csv# 回测明细
 data/backtest_groups_YYYY-MM-DD.csv # 分组回测
+data/backtest_validation_YYYY-MM-DD.json # 统计验证
+data/runs/YYYY-MM-DD/run_card.json # 可审计运行卡
+data/runs/YYYY-MM-DD/run_card.md   # 可读运行卡
+data/hypotheses.json       # 研究假设注册表
 data/ai_berkshire_candidates_YYYY-MM-DD.csv # AI Berkshire 二次风控候选
 ```
 
@@ -61,8 +70,13 @@ data/ai_berkshire_candidates_YYYY-MM-DD.csv # AI Berkshire 二次风控候选
 ```text
 .
 ├── stock_engine.py          # 主引擎：行情、评分、龙虎榜、回测摘要、报告输出
+├── data_sources.py          # 数据源注册表与数据质量校验
 ├── dragon_tiger.py          # 龙虎榜抓取与匹配
+├── fund_flow.py             # 主力资金流抓取与匹配
 ├── backtest.py              # 历史信号收益回测
+├── validation.py            # 回测样本统计验证
+├── run_card.py              # 运行卡与 artifact hash
+├── hypothesis_registry.py   # 假设注册表与策略版本追踪
 ├── risk_control.py          # 风控过滤与降级
 ├── theme_strength.py        # 题材强度评分
 ├── ai_berkshire_gate.py     # AI Berkshire 候选导出

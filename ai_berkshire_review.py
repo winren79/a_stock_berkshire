@@ -52,9 +52,11 @@ def _financial_agent(row: pd.Series, context: dict[str, Any]) -> tuple[str, str]
     tested_rows = int(context.get("backtest_tested_rows") or 0)
     finance_data_available = bool(context.get("finance_data_available", False))
     if not finance_data_available:
-        if amount >= 300_000_000 and tested_rows >= 20:
-            return "WATCH", "缺少ROE/FCF/估值双源数据，只能以流动性和回测样本作弱验证"
-        return "VETO", "缺少财务双源数据且流动性或样本不足"
+        if amount < 300_000_000:
+            return "VETO", "缺少财务双源数据且流动性不足"
+        if tested_rows < 20:
+            return "WATCH", "缺少ROE/FCF/估值双源数据且回测样本不足，只能观察"
+        return "WATCH", "缺少ROE/FCF/估值双源数据，只能以流动性和回测样本作弱验证"
     return "PASS", "财务数据已通过双源校验"
 
 

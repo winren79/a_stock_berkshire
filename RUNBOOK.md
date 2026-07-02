@@ -28,6 +28,8 @@
 - ST/退市、北交所、流动性、过热、分歧、题材集中风控
 - 题材强度评分
 - AI Berkshire 二次风控候选文件导出
+- AI Berkshire 本地规则化四角色复核：短线 / 财务 / 生意 / 风险
+- A / B / C / D 建议等级、触发条件和风险预算
 - BUY / HOLD / AVOID 规则信号
 
 当前没有：
@@ -36,7 +38,7 @@
 - 自动交易
 - 游资席位标签识别
 - 真正调用 AI Berkshire skill
-- 自动写回 AI Berkshire PASS/WATCH/VETO
+- 远端真实多 Agent AI Berkshire 深度投研写回
 - 当天信号的未来收益胜率
 
 ## 固定路径
@@ -56,6 +58,8 @@ backtest.py
 risk_control.py
 theme_strength.py
 ai_berkshire_gate.py
+ai_berkshire_review.py
+advice_engine.py
 scripts/run.sh
 ```
 
@@ -69,6 +73,8 @@ data/signals_YYYY-MM-DD.csv
 data/backtest_YYYY-MM-DD.csv
 data/backtest_groups_YYYY-MM-DD.csv
 data/ai_berkshire_candidates_YYYY-MM-DD.csv
+data/ai_berkshire_review_YYYY-MM-DD.csv
+data/advice_YYYY-MM-DD.csv
 ```
 
 ## 标准运行
@@ -100,6 +106,8 @@ sed -n '1,120p' logs/$(date '+%Y-%m-%d').md
 - risk_pass_count / risk_watch_count / risk_veto_count
 - top_theme / top_theme_strength
 - ai_candidates_path / ai_berkshire_status
+- ai_review_path / ai_pass_count / ai_watch_count / ai_veto_count
+- advice_path / advice_a_count / advice_b_count / advice_c_count / advice_d_count
 - 是否运行成功
 
 ## 回测规则
@@ -117,6 +125,7 @@ venv/bin/python backtest.py --max-symbols 30
 - 当天信号没有未来收益，`tested_rows: 0` 时不能声称胜率
 - 样本数太少时只能说“样本不足”，不能说系统有效
 - 分组回测文件存在不代表结论有效；必须看每组样本数
+- 分组回测包含 `AI_Berkshire_复核` 和 `建议等级`，用于验证第二道风控是否真的改善胜率、平均收益或最大亏损
 
 ## 自动任务
 
@@ -140,8 +149,8 @@ sed -n '1,220p' /Users/hechen/.codex/automations/a-3-0-3/automation.toml
 
 不要说：
 
-- “AI Berkshire 已参与评分”
-- “AI Berkshire 已完成风控”，除非候选文件已被实际评审并写回
+- “远端 AI Berkshire 多 Agent 已参与评分”
+- “AI Berkshire 已完成完整深度投研”
 - “已识别章盟主/佛山/量化席位”
 - “系统胜率已验证”
 - “BUY 是买入建议”
@@ -149,22 +158,23 @@ sed -n '1,220p' /Users/hechen/.codex/automations/a-3-0-3/automation.toml
 
 只有在对应数据真实存在时才能说：
 
-- AI Berkshire skill 已调用
+- 远端 AI Berkshire skill 已调用
 - 游资席位已识别
 - 回测有胜率
 - 数据源有效返回
 
 ## 与 AI Berkshire 的合理组合
 
-当前系统没有实际调用 AI Berkshire skill。
+当前系统没有实际调用远端 AI Berkshire skill；已经内置本地规则化 AI Berkshire 二次复核。
 
-如果未来要结合，推荐作为二次风控层：
+当前闭环：
 
 1. 本系统生成 Top 10-20 短线候选。
-2. 对候选调用 AI Berkshire 的质量/新闻/行业风控。
-3. AI Berkshire 只输出 PASS / WATCH / VETO。
-4. 回测比较原始系统与 VETO 后系统。
-5. 如果胜率、平均收益、最大回撤没有改善，不应声称 AI Berkshire 增强有效。
+2. `ai_berkshire_review.py` 用短线、财务、生意、风险四角色复核。
+3. 输出 `AI_PASS / AI_WATCH / AI_VETO`。
+4. `advice_engine.py` 把复核结果纳入 `A / B / C / D` 建议层。
+5. `backtest.py` 按 AI 复核和建议等级分组回测。
+6. 如果胜率、平均收益、最大回撤没有改善，不应声称 AI Berkshire 增强有效。
 
 ## 复盘模板
 
@@ -207,7 +217,8 @@ sed -n '1,220p' /Users/hechen/.codex/automations/a-3-0-3/automation.toml
 - 最强题材：
 - 题材强度：
 - AI Berkshire 候选文件：
-- AI Berkshire 状态：
+- AI Berkshire 复核：
+- 建议等级分布：
 
 ## 结论
 - 今天能确认的事实：

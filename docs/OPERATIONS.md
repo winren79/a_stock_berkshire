@@ -37,6 +37,8 @@ sed -n '1,220p' /Users/hechen/.codex/automations/a-3-0-3/automation.toml
 - 报告中有 rows_fetched 和 rows_selected
 - 报告中有风控分布和最强题材
 - `data/ai_berkshire_candidates_YYYY-MM-DD.csv` 已生成
+- `data/ai_berkshire_review_YYYY-MM-DD.csv` 已生成
+- `data/advice_YYYY-MM-DD.csv` 已生成
 
 ## 故障处理
 
@@ -72,15 +74,18 @@ ls -lh logs/
 
 不能据此声称系统胜率。
 
-### AI Berkshire 候选未评估
+### AI Berkshire 复核为空或全是 WATCH
 
-如果报告中显示：
+如果报告中显示 AI Berkshire 复核全是 `AI_WATCH`，优先检查：
 
-```text
-pending_manual_or_codex_skill_review
-```
+- `backtest_tested_rows` 是否小于 20
+- 是否缺少财务双源数据
+- 当日是否处于 `高潮` 情绪周期
+- 龙虎榜是否出现强分歧
 
-说明系统只导出了候选清单，还没有真实调用 AI Berkshire 做 PASS/WATCH/VETO。不要声称 AI Berkshire 已经参与评分。
+这不是程序错误，而是第二道风控在收紧。只有当回测样本、基础风控、题材强度和复核层都通过时，建议层才可能给出 A 级。
+
+当前复核是本地规则化 AI Berkshire 复核，不等同于远端真实多 Agent 深度投研。不要说“远端 AI Berkshire 团队已完成研究”。
 
 ## 发布前清理
 

@@ -27,12 +27,12 @@ def export_ai_berkshire_candidates(signals: pd.DataFrame, output_path: Path, lim
     ]
     present = [column for column in columns if column in signals.columns]
     candidates = signals[present].head(limit).copy() if not signals.empty else pd.DataFrame(columns=columns)
-    candidates["AI_Berkshire_状态"] = "待评估"
+    candidates["AI_Berkshire_状态"] = "queued_for_rule_review"
     candidates["AI_Berkshire_建议"] = ""
     candidates["AI_Berkshire_理由"] = ""
     candidates.to_csv(output_path, index=False, encoding="utf-8-sig")
     return {
         "ai_candidates_path": str(output_path),
         "ai_candidates_count": int(len(candidates)),
-        "ai_berkshire_status": "pending_manual_or_codex_skill_review",
+        "ai_berkshire_status": "rule_review_enabled",
     }

@@ -21,13 +21,14 @@ pip install -r requirements.txt
 运行基础检查：
 
 ```bash
-venv/bin/python -m py_compile stock_engine.py dragon_tiger.py backtest.py risk_control.py theme_strength.py ai_berkshire_gate.py tests/test_signal_modules.py
+venv/bin/python -m py_compile stock_engine.py dragon_tiger.py backtest.py risk_control.py theme_strength.py ai_berkshire_gate.py ai_berkshire_review.py advice_engine.py tests/test_signal_modules.py
 venv/bin/python - <<'PY'
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tests.test_signal_modules import (
     test_ai_berkshire_candidate_export,
+    test_ai_berkshire_review_constrains_advice_layer,
     test_enrich_with_dragon_tiger_marks_positive_and_negative_matches,
     test_normalize_code_keeps_six_digits,
     test_risk_controls_veto_st_and_retired_names,
@@ -40,6 +41,7 @@ test_risk_controls_veto_st_and_retired_names()
 test_theme_strength_scores_group_activity()
 with TemporaryDirectory() as d:
     test_ai_berkshire_candidate_export(Path(d))
+test_ai_berkshire_review_constrains_advice_layer()
 print("logic tests passed")
 PY
 ```
@@ -65,3 +67,4 @@ PY
 - 是否影响 BUY / HOLD / AVOID 规则
 - 是否影响 cron 自动任务
 - 是否影响风控、题材强度、AI Berkshire 候选导出
+- 是否影响 AI Berkshire 二次复核、建议等级或回测分组

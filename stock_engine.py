@@ -18,14 +18,19 @@ from advice_engine import export_advice
 from ai_berkshire_gate import export_ai_berkshire_candidates
 from ai_berkshire_review import export_ai_berkshire_review, review_candidates
 from backtest import backtest_signal_file
+from data_sources import fetch_market_data_result
 from dragon_tiger import enrich_with_dragon_tiger, fetch_dragon_tiger, summarize_dragon_tiger
+from fund_flow import enrich_with_fund_flow, fetch_fund_flow, summarize_fund_flow
+from hypothesis_registry import record_daily_run
 from risk_control import apply_risk_controls
+from run_card import write_run_card
 from theme_strength import apply_theme_strength, compute_theme_strength
 
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 LOG_DIR = ROOT / "logs"
+STRATEGY_VERSION = "2026.07.phase2"
 
 THEMES = {
     "AI": ["AI", "人工智能", "智能", "算力", "大模型"],
@@ -52,12 +57,19 @@ class RunSummary:
     lhb_positive_count: int
     lhb_negative_count: int
     lhb_net_buy_total: float
+    fund_flow_source: str
+    fund_flow_matched_count: int
+    fund_flow_positive_count: int
+    fund_flow_negative_count: int
+    fund_flow_net_total: float
     backtest_signal_date: str
     backtest_tested_rows: int
     backtest_win_rate_1d: float | None
     backtest_avg_return_1d: float | None
     backtest_max_loss_1d: float | None
     backtest_grouped_path: str
+    backtest_validation_path: str
+    backtest_validation_status_1d: str
     risk_pass_count: int
     risk_watch_count: int
     risk_veto_count: int
@@ -77,6 +89,12 @@ class RunSummary:
     ai_watch_count: int
     ai_veto_count: int
     ai_review_path: str
+    data_warnings: list[str]
+    run_card_json_path: str
+    run_card_md_path: str
+    strategy_version: str
+    hypothesis_id: str
+    hypothesis_registry_path: str
     csv_path: str
     markdown_path: str
     log_path: str
@@ -127,41 +145,18 @@ def _has_usable_market_values(df: pd.DataFrame) -> bool:
     return amount_count >= 50 or pct_count >= 50
 
 
+def _latest_signal_snapshot(before_date: str) -> Path | None:
+    snapshots = []
+    for path in DATA_DIR.glob("signals_*.csv"):
+        signal_date = path.stem.replace("signals_", "").replace("-", "")
+        if signal_date < before_date:
+            snapshots.append(path)
+    return sorted(snapshots)[-1] if snapshots else None
+
+
 def fetch_market_data(date: str | None = None) -> tuple[pd.DataFrame, str]:
-    errors: list[str] = []
-    used_date = date or datetime.now().strftime("%Y%m%d")
-
-    try:
-        zt = ak.stock_zt_pool_em(date=used_date)
-    except Exception as exc:
-        errors.append(f"stock_zt_pool_em: {type(exc).__name__}: {exc}")
-        zt = pd.DataFrame()
-
-    if not zt.empty:
-        if _has_usable_market_values(zt):
-            return zt, f"akshare.stock_zt_pool_em(date={used_date})"
-        errors.append("stock_zt_pool_em: unusable zero market values")
-
-    try:
-        spot = ak.stock_zh_a_spot_em()
-    except Exception as exc:
-        errors.append(f"stock_zh_a_spot_em: {type(exc).__name__}: {exc}")
-    else:
-        if _has_usable_market_values(spot):
-            return spot, "akshare.stock_zh_a_spot_em(fallback: stock_zt_pool_em empty/unavailable)"
-        errors.append("stock_zh_a_spot_em: empty dataframe" if spot.empty else "stock_zh_a_spot_em: unusable zero market values")
-
-    try:
-        sina_spot = ak.stock_zh_a_spot()
-    except Exception as exc:
-        errors.append(f"stock_zh_a_spot: {type(exc).__name__}: {exc}")
-    else:
-        if _has_usable_market_values(sina_spot):
-            return sina_spot, "akshare.stock_zh_a_spot(fallback: eastmoney spot unavailable)"
-        errors.append("stock_zh_a_spot: empty dataframe" if sina_spot.empty else "stock_zh_a_spot: unusable zero market values")
-
-    detail = "; ".join(errors) if errors else "all market data sources returned empty"
-    raise RuntimeError(f"market data fetch failed: {detail}")
+    result = fetch_market_data_result(date=date, data_dir=DATA_DIR)
+    return result.data, result.display_source
 
 
 def market_emotion(limit_up_like_count: int) -> str:
@@ -322,6 +317,20 @@ def apply_dragon_tiger(signals: pd.DataFrame, date: str | None, emotion: str) ->
     return enriched, summarize_dragon_tiger(enriched), source
 
 
+def apply_fund_flow(signals: pd.DataFrame, emotion: str) -> tuple[pd.DataFrame, dict[str, Any], str]:
+    try:
+        flow, source = fetch_fund_flow()
+    except Exception as exc:
+        enriched = enrich_with_fund_flow(signals, pd.DataFrame())
+        return enriched, summarize_fund_flow(enriched), f"资金流获取失败: {type(exc).__name__}: {exc}"
+
+    enriched = enrich_with_fund_flow(signals, flow)
+    if not enriched.empty:
+        enriched["信号"] = enriched.apply(lambda row: signal_from_score(row, emotion), axis=1)
+        enriched = sort_signals(enriched[enriched["分数"] >= 4])
+    return enriched, summarize_fund_flow(enriched), source
+
+
 def maybe_backtest_previous_signal(current_file_day: str) -> dict[str, Any]:
     previous = []
     for path in sorted(DATA_DIR.glob("signals_*.csv")):
@@ -336,9 +345,18 @@ def maybe_backtest_previous_signal(current_file_day: str) -> dict[str, Any]:
             "avg_return_1d": None,
             "max_loss_1d": None,
             "grouped_path": "",
+            "validation_path": "",
+            "validation_status_1d": "no_signal",
         }
 
     _, summary = backtest_signal_file(previous[-1], max_symbols=20)
+    validation_status = "unknown"
+    if summary.validation_output_path:
+        try:
+            validation = json.loads(Path(summary.validation_output_path).read_text(encoding="utf-8"))
+            validation_status = str(validation.get("1d", {}).get("status", "unknown"))
+        except Exception:
+            validation_status = "unreadable"
     return {
         "signal_date": summary.signal_date,
         "tested_rows": summary.tested_rows,
@@ -346,6 +364,8 @@ def maybe_backtest_previous_signal(current_file_day: str) -> dict[str, Any]:
         "avg_return_1d": summary.avg_return_by_horizon.get("1d"),
         "max_loss_1d": summary.max_loss_by_horizon.get("1d"),
         "grouped_path": summary.grouped_output_path,
+        "validation_path": summary.validation_output_path,
+        "validation_status_1d": validation_status,
     }
 
 
@@ -363,18 +383,28 @@ def write_markdown(signals: pd.DataFrame, summary: RunSummary) -> None:
         f"- 信号分布：BUY {summary.buy_count} / HOLD {summary.hold_count} / AVOID {summary.avoid_count}",
         f"- 龙虎榜来源：{summary.lhb_source}",
         f"- 龙虎榜匹配：上榜 {summary.lhb_listed_count} / 净买 {summary.lhb_positive_count} / 净卖 {summary.lhb_negative_count} / 净买额合计 {summary.lhb_net_buy_total:.0f}",
+        f"- 资金流来源：{summary.fund_flow_source}",
+        f"- 资金流匹配：匹配 {summary.fund_flow_matched_count} / 强确认 {summary.fund_flow_positive_count} / 强分歧 {summary.fund_flow_negative_count} / 主力净流入合计 {summary.fund_flow_net_total:.0f}",
         f"- 回测摘要：信号日 {summary.backtest_signal_date or '无可回测历史信号'} / 样本 {summary.backtest_tested_rows} / 1日胜率 {summary.backtest_win_rate_1d if summary.backtest_win_rate_1d is not None else 'NA'} / 1日均值 {summary.backtest_avg_return_1d if summary.backtest_avg_return_1d is not None else 'NA'}",
         f"- 分组回测：{summary.backtest_grouped_path or '无'}",
+        f"- 统计验证：1日状态 {summary.backtest_validation_status_1d} / 文件 {summary.backtest_validation_path or '无'}",
         f"- 风控分布：PASS {summary.risk_pass_count} / WATCH {summary.risk_watch_count} / VETO {summary.risk_veto_count}",
         f"- 最强题材：{summary.top_theme or '无'} / 强度 {summary.top_theme_strength}",
         f"- AI Berkshire 候选：{summary.ai_candidates_count} / 状态 {summary.ai_berkshire_status} / 文件 {summary.ai_candidates_path}",
         f"- AI Berkshire 复核：PASS {summary.ai_pass_count} / WATCH {summary.ai_watch_count} / VETO {summary.ai_veto_count} / 文件 {summary.ai_review_path}",
         f"- 投资建议层：A {summary.advice_a_count} / B {summary.advice_b_count} / C {summary.advice_c_count} / D {summary.advice_d_count} / 文件 {summary.advice_path}",
+        f"- Run Card：{summary.run_card_json_path}",
+        f"- 策略版本：{summary.strategy_version}",
+        f"- 假设注册表：{summary.hypothesis_registry_path} / hypothesis={summary.hypothesis_id}",
         "",
         "> 仅用于研究和复盘，不构成个性化投资建议。BUY/HOLD/AVOID 是规则信号；A/B/C/D 是基于固定规则的研究建议层，必须结合账户风险和人工复核。",
         "> AI_PASS 不是买入建议，仅表示多角色复核未发现否决性问题；AI_WATCH/AI_VETO 会限制或否决建议层。",
         "",
     ]
+    if summary.data_warnings:
+        lines.extend(["## 数据质量告警", ""])
+        lines.extend(f"- {warning}" for warning in summary.data_warnings)
+        lines.append("")
 
     if signals.empty:
         lines.append("本次没有满足阈值的标的。")
@@ -393,6 +423,8 @@ def write_markdown(signals: pd.DataFrame, summary: RunSummary) -> None:
                 "量比",
                 "龙虎榜确认",
                 "龙虎榜净买额",
+                "资金流确认",
+                "主力净流入",
                 "风控结论",
                 "风控标签",
                 "AI_Berkshire_复核",
@@ -419,10 +451,18 @@ def run(date: str | None, min_score: int) -> RunSummary:
     log_path = LOG_DIR / f"{file_day}.log"
     csv_path = DATA_DIR / f"signals_{file_day}.csv"
     markdown_path = LOG_DIR / f"{file_day}.md"
+    run_card_dir = DATA_DIR / "runs" / file_day
+    run_card_json_path = run_card_dir / "run_card.json"
+    run_card_md_path = run_card_dir / "run_card.md"
+    hypothesis_registry_path = DATA_DIR / "hypotheses.json"
+    hypothesis_id = "a_stock_short_signal_v1"
 
-    raw, source = fetch_market_data(date)
+    market_data = fetch_market_data_result(date=date, data_dir=DATA_DIR)
+    raw, source = market_data.data, market_data.display_source
+    data_warnings = market_data.warnings
     signals, emotion, limit_up_like_count, theme_stats = build_signals(raw, min_score)
     signals, lhb_summary, lhb_source = apply_dragon_tiger(signals, date, emotion)
+    signals, fund_flow_summary, fund_flow_source = apply_fund_flow(signals, emotion)
     signals = apply_risk_controls(signals)
     if not signals.empty:
         signals = sort_signals(signals)
@@ -462,12 +502,19 @@ def run(date: str | None, min_score: int) -> RunSummary:
         lhb_positive_count=int(lhb_summary["lhb_positive_count"]),
         lhb_negative_count=int(lhb_summary["lhb_negative_count"]),
         lhb_net_buy_total=float(lhb_summary["lhb_net_buy_total"]),
+        fund_flow_source=fund_flow_source,
+        fund_flow_matched_count=int(fund_flow_summary["fund_flow_matched_count"]),
+        fund_flow_positive_count=int(fund_flow_summary["fund_flow_positive_count"]),
+        fund_flow_negative_count=int(fund_flow_summary["fund_flow_negative_count"]),
+        fund_flow_net_total=float(fund_flow_summary["fund_flow_net_total"]),
         backtest_signal_date=str(backtest_summary["signal_date"]),
         backtest_tested_rows=int(backtest_summary["tested_rows"]),
         backtest_win_rate_1d=backtest_summary["win_rate_1d"],
         backtest_avg_return_1d=backtest_summary["avg_return_1d"],
         backtest_max_loss_1d=backtest_summary["max_loss_1d"],
         backtest_grouped_path=str(backtest_summary["grouped_path"]),
+        backtest_validation_path=str(backtest_summary["validation_path"]),
+        backtest_validation_status_1d=str(backtest_summary["validation_status_1d"]),
         risk_pass_count=int((reviewed_signals["风控结论"] == "PASS").sum()) if not reviewed_signals.empty else 0,
         risk_watch_count=int((reviewed_signals["风控结论"] == "WATCH").sum()) if not reviewed_signals.empty else 0,
         risk_veto_count=int((reviewed_signals["风控结论"] == "VETO").sum()) if not reviewed_signals.empty else 0,
@@ -487,12 +534,51 @@ def run(date: str | None, min_score: int) -> RunSummary:
         ai_watch_count=int(ai_review_summary["ai_watch_count"]),
         ai_veto_count=int(ai_review_summary["ai_veto_count"]),
         ai_review_path=str(ai_review_summary["ai_review_path"]),
+        data_warnings=data_warnings,
+        run_card_json_path=str(run_card_json_path),
+        run_card_md_path=str(run_card_md_path),
+        strategy_version=STRATEGY_VERSION,
+        hypothesis_id=hypothesis_id,
+        hypothesis_registry_path=str(hypothesis_registry_path),
         csv_path=str(csv_path),
         markdown_path=str(markdown_path),
         log_path=str(log_path),
     )
 
     write_markdown(reviewed_signals, summary)
+    artifacts = {
+        "signals": csv_path,
+        "markdown_report": markdown_path,
+        "ai_candidates": ai_output_path,
+        "ai_review": ai_review_output_path,
+        "advice": advice_output_path,
+    }
+    if summary.backtest_grouped_path:
+        artifacts["backtest_groups"] = Path(summary.backtest_grouped_path)
+    write_run_card(summary, run_card_dir, artifacts=artifacts, warnings=data_warnings)
+    record_daily_run(
+        registry_path=hypothesis_registry_path,
+        hypothesis_id=hypothesis_id,
+        title="A股短线规则信号系统",
+        thesis="情绪周期、题材强度、成交额、龙虎榜、风控和AI Berkshire复核组合能提高A股短线候选池质量。",
+        strategy_version=STRATEGY_VERSION,
+        run_card_path=run_card_json_path,
+        metrics={
+            "rows_fetched": summary.rows_fetched,
+            "rows_selected": summary.rows_selected,
+            "buy_count": summary.buy_count,
+            "hold_count": summary.hold_count,
+            "avoid_count": summary.avoid_count,
+            "ai_pass_count": summary.ai_pass_count,
+            "ai_watch_count": summary.ai_watch_count,
+            "ai_veto_count": summary.ai_veto_count,
+            "fund_flow_positive_count": summary.fund_flow_positive_count,
+            "fund_flow_negative_count": summary.fund_flow_negative_count,
+            "backtest_tested_rows": summary.backtest_tested_rows,
+            "backtest_win_rate_1d": summary.backtest_win_rate_1d,
+            "backtest_validation_status_1d": summary.backtest_validation_status_1d,
+        },
+    )
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(asdict(summary), ensure_ascii=False) + "\n")
     return summary

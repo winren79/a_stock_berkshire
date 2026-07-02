@@ -49,7 +49,7 @@ trading-research
 
 ```bash
 git init
-git add README.md RUNBOOK.md SKILL.md requirements.txt stock_engine.py dragon_tiger.py backtest.py risk_control.py theme_strength.py ai_berkshire_gate.py scripts tests docs CONTRIBUTING.md DISCLAIMER.md .gitignore
+git add README.md RUNBOOK.md SKILL.md requirements.txt stock_engine.py dragon_tiger.py backtest.py risk_control.py theme_strength.py ai_berkshire_gate.py ai_berkshire_review.py advice_engine.py scripts tests docs CONTRIBUTING.md DISCLAIMER.md .gitignore
 git commit -m "feat: add A-share short-term signal system"
 ```
 
